@@ -1,12 +1,33 @@
 from tensorflow import keras
+from os.path import join, dirname
 
-def build_musicnn_classifier(inputs, num_classes=2, num_units_classifier=100, final_activation=keras.activations.sigmoid, num_filt_frontend=1.6, num_filt_midend=64, num_units_backend=200, training=None, **kwargs):
+
+def load_weights(model, weights):
+    if weights:
+        try:
+            # First try built-in weights
+            path = join(dirname(__file__), f'{weights}.h5')
+            model.load_weights(path, by_name=True, skip_mismatch=True)
+        except OSError:
+            # Then check if path is HDF5 file containing weights only
+            try:
+                model.load_weights(f'{weights}.h5', by_name=True, skip_mismatch=True)
+            # Otherwise the path points to a saved whole model
+            except OSError:
+                source_model = keras.models.load_model(weights, compile=False, custom_objects={'MusicnnFrontend': MusicnnFrontend, 'MusicnnMidend': MusicnnMidend, 'MusicnnBackend': MusicnnBackend})
+                model.set_weights(source_model.get_weights())
+
+
+def build_musicnn_classifier(inputs, num_classes=2, num_units_classifier=100, classifier_activation='relu', final_activation='sigmoid', num_filt_frontend=1.6, num_filt_midend=64, num_units_backend=200, training=None, weights=None, **kwargs):
     musicnn = build_musicnn(inputs, num_units_classifier, num_filt_frontend, num_filt_midend, num_units_backend, training, **kwargs)
+    musicnn.get_layer('backend').logits.activation = keras.activations.get(classifier_activation)
     output = keras.layers.Dense(num_classes, activation=final_activation, name='classifier')(musicnn.get_layer('backend').output)
-    return keras.Model(inputs=musicnn.input, outputs=output, name='musicnn_classifier', **kwargs)
+    model = keras.Model(inputs=musicnn.input, outputs=output, name='musicnn_classifier', **kwargs)
+    load_weights(model, weights)
+    return model
 
 
-def build_musicnn(inputs, num_classes, num_filt_frontend=1.6, num_filt_midend=64, num_units_backend=200, training=None, **kwargs):
+def build_musicnn(inputs, num_classes, num_filt_frontend=1.6, num_filt_midend=64, num_units_backend=200, training=None, weights=None, **kwargs):
 
     ### front-end ### musically motivated CNN
     frontend_features_list = MusicnnFrontend(num_filt_frontend, name='frontend')(inputs, training)
@@ -22,7 +43,9 @@ def build_musicnn(inputs, num_classes, num_filt_frontend=1.6, num_filt_midend=64
     logits = MusicnnBackend(num_classes, num_units_backend, name='backend')(midend_features, training)
     taggram = keras.layers.Activation(keras.activations.sigmoid, name='taggram')(logits)
 
-    return keras.Model(inputs=inputs, outputs=taggram, name='musicnn', **kwargs)
+    model = keras.Model(inputs=inputs, outputs=taggram, name='musicnn', **kwargs)
+    load_weights(model, weights)
+    return model
 
 
 class Musicnn(keras.Model):
