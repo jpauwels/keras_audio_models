@@ -107,7 +107,6 @@ class MusicnnFrontend(keras.layers.Layer):
 
     def build(self, input_shape):
         super().build(input_shape)
-        self.add_channel = keras.layers.Reshape(target_shape=input_shape[1:]+(1,))
         if len(input_shape) == 4:
             self.timbral_padding = keras.layers.ZeroPadding3D(padding=(0, 3, 0), name='timbral_padding')
         else:
@@ -119,7 +118,7 @@ class MusicnnFrontend(keras.layers.Layer):
 
 
     def call(self, inputs, training=None):
-        add_channel = self.add_channel(inputs)
+        add_channel = keras.backend.expand_dims(inputs)
         normalized_input = self.normalized_input(add_channel, training)
         input_pad_7 =  self.timbral_padding(normalized_input)
         f74 = self.f74(input_pad_7, training)
@@ -153,14 +152,13 @@ class MusicnnFrontendBlock(keras.layers.Layer):
             self.maxpool = keras.layers.MaxPooling3D(pool_size=(1, 1, conv_cols), name='maxpool')
         else:
             self.maxpool = keras.layers.MaxPooling2D(pool_size=(1, conv_cols), name='maxpool')
-        self.squeeze = keras.layers.Reshape(target_shape=(*input_shape[1:-3], -1, self.conv.filters), name='squeeze')
 
 
     def call(self, inputs, training=None):
         conv = self.conv(inputs)
         bn_conv = self.bn_conv(conv, training)
         maxpool = self.maxpool(bn_conv)
-        squeeze = self.squeeze(maxpool)
+        squeeze = keras.backend.squeeze(maxpool, -2)
         return squeeze
 
 
@@ -221,8 +219,6 @@ class MusicnnMidend(keras.layers.Layer):
 class MusicnnBackend(keras.layers.Layer):
     def __init__(self, num_classes, output_units, **kwargs):
         super().__init__(**kwargs)
-        # temporal pooling
-        self.all_pool = keras.layers.Lambda(lambda x: keras.backend.stack(x, axis=-1), name='pool_concat')
 
         # penultimate dense layer
         self.bn_flat_pool = keras.layers.BatchNormalization(name='batch_norm_pool')
@@ -238,27 +234,30 @@ class MusicnnBackend(keras.layers.Layer):
     def build(self, input_shape):
         super().build(input_shape)
         if len(input_shape) == 4:
-            self.permute_input = keras.layers.Permute((2, 3, 1))
+            self.channel_last = keras.layers.Permute((2, 3, 1))
             self.max_pool = keras.layers.MaxPooling2D(pool_size=(input_shape[-2], 1), data_format='channels_last')
             self.mean_pool= keras.layers.AveragePooling2D(pool_size=(input_shape[-2], 1), data_format='channels_last')
-            self.permute_pool = keras.layers.Permute((3, 1, 2, 4))
+            self.all_pool = keras.layers.Concatenate(axis=-2)
+            self.flat_pool = keras.Sequential([
+                keras.layers.Permute((3, 1, 2)),
+                keras.layers.Lambda(lambda x: keras.backend.squeeze(x, -2)),
+            ])
         else:
-            self.permute_input = self.permute_pool = keras.layers.Layer()
+            self.channel_last = self.flat_pool = keras.layers.Layer()
             self.max_pool = keras.layers.GlobalMaxPooling1D(data_format='channels_last')
             self.mean_pool= keras.layers.GlobalAveragePooling1D(data_format='channels_last')
-        self.flat_pool = keras.layers.Reshape(target_shape=(*input_shape[1:-2], -1))
+            self.all_pool = keras.layers.Concatenate(axis=-1)
 
 
     def call(self, inputs, training=None):
         # temporal pooling
-        channel_last = self.permute_input(inputs)
+        channel_last = self.channel_last(inputs)
         max_pool = self.max_pool(channel_last)
         mean_pool = self.mean_pool(channel_last)
         all_pool = self.all_pool([max_pool, mean_pool])
-        permute_pool = self.permute_pool(all_pool)
 
         # penultimate dense layer
-        flat_pool = self.flat_pool(permute_pool)
+        flat_pool = self.flat_pool(all_pool)
         bn_flat_pool = self.bn_flat_pool(flat_pool, training)
         flat_pool_dropout = self.flat_pool_dropout(bn_flat_pool, training)
         penultimate = self.penultimate(flat_pool_dropout)
