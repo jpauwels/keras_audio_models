@@ -1,5 +1,6 @@
 from tensorflow import keras
 from os.path import join, dirname
+from collections.abc import Iterable 
 
 
 def load_weights(model, weights):
@@ -18,29 +19,40 @@ def load_weights(model, weights):
                 model.set_weights(source_model.get_weights())
 
 
-def build_musicnn_classifier(inputs, num_classes=2, num_units_classifier=100, classifier_activation='relu', final_activation='sigmoid', num_filt_frontend=1.6, num_filt_midend=64, num_units_backend=200, training=None, weights=None, **kwargs):
-    musicnn = build_musicnn(inputs, num_units_classifier, num_filt_frontend, num_filt_midend, num_units_backend, training, **kwargs)
-    musicnn.get_layer('backend').logits.activation = keras.activations.get(classifier_activation)
-    output = keras.layers.Dense(num_classes, activation=final_activation, name='classifier')(musicnn.get_layer('backend').output)
-    model = keras.Model(inputs=musicnn.input, outputs=output, name='musicnn_classifier', **kwargs)
-    load_weights(model, weights)
+def build_musicnn_classifier(
+    inputs,
+    num_classes=2,
+    final_activation='sigmoid',
+    num_filt_frontend=1.6,
+    num_filt_midend=64,
+    num_units_backend=(200, 100),
+    backend_dropout=0.5,
+    weights=None,
+    **kwargs
+):
+    musicnn = build_musicnn(inputs, num_classes, num_filt_frontend, num_filt_midend, num_units_backend, backend_dropout, weights, **kwargs)
+    musicnn.get_layer('backend').classifier.get_layer('logits').activation = keras.activations.get(final_activation)
+    model = keras.Model(inputs=musicnn.input, outputs=musicnn.get_layer('backend').output, name='musicnn_classifier', **kwargs)
     return model
 
 
-def build_musicnn(inputs, num_classes, num_filt_frontend=1.6, num_filt_midend=64, num_units_backend=200, training=None, weights=None, **kwargs):
-
-    ### front-end ### musically motivated CNN
-    frontend_features_list = MusicnnFrontend(num_filt_frontend, name='frontend')(inputs, training)
-    # concatenate features coming from the front-end
+def build_musicnn(
+    inputs,
+    num_classes=50,
+    num_filt_frontend=1.6,
+    num_filt_midend=64,
+    num_units_backend=200,
+    backend_dropout=0.5,
+    weights=None,
+    **kwargs
+):
+    frontend_features_list = MusicnnFrontend(num_filt_frontend, name='frontend')(inputs)
     frontend_features = keras.layers.Concatenate(axis=-1, name='concat_frontend')(frontend_features_list)
 
-    ### mid-end ### dense layers
-    midend_features_list = MusicnnMidend(num_filt_midend, name='midend')(frontend_features, training)
-    # dense connection: concatenate features coming from different layers of the front- and mid-end
+    midend_features_list = MusicnnMidend(num_filt_midend, name='midend')(frontend_features)
     midend_features = keras.layers.Concatenate(axis=-1, name='concat_midend')(midend_features_list)
 
-    ### back-end ### temporal pooling
-    logits = MusicnnBackend(num_classes, num_units_backend, name='backend')(midend_features, training)
+    logits = MusicnnBackend(num_classes, num_units_backend, backend_dropout, name='backend')(midend_features)
     taggram = keras.layers.Activation(keras.activations.sigmoid, name='taggram')(logits)
 
     model = keras.Model(inputs=inputs, outputs=taggram, name='musicnn', **kwargs)
@@ -52,33 +64,24 @@ class Musicnn(keras.Model):
     def __init__(self, num_classes, num_filt_frontend=1.6, num_filt_midend=64, num_units_backend=200, **kwargs):
         super().__init__(**kwargs)
 
-        ### front-end ### musically motivated CNN
         self.frontend = MusicnnFrontend(num_filt_frontend, name='frontend')
-        # concatenate features coming from the front-end
         self.frontend_concat = keras.layers.Concatenate(axis=2, name='concat_frontend')
 
-        ### mid-end ### dense layers
         self.midend = MusicnnMidend(num_filt_midend, name='midend')
-        # dense connection: concatenate features coming from different layers of the front- and mid-end
         self.midend_concat = keras.layers.Concatenate(axis=2, name='concat_midend')
 
-        ### back-end ### temporal pooling
         self.backend = MusicnnBackend(num_classes, num_units_backend, name='backend')
         self.final_activation = keras.layers.Activation(keras.activations.sigmoid, name='taggram')
 
 
     def call(self, inputs, training=None):
-        frontend_features_list = self.frontend(inputs, training)
-        # concatenate features coming from the front-end
+        frontend_features_list = self.frontend(inputs, training=training)
         frontend_features = self.frontend_concat(frontend_features_list)
 
-        ### mid-end ### dense layers
-        midend_features_list = self.midend(frontend_features, training)
-        # dense connection: concatenate features coming from different layers of the front- and mid-end
+        midend_features_list = self.midend(frontend_features, training=training)
         midend_features = self.midend_concat(midend_features_list)
 
-        ### back-end ### temporal pooling
-        logits = self.backend(midend_features, training)
+        logits = self.backend(midend_features, training=training)
         return self.final_activation(logits)
 
 
@@ -119,14 +122,14 @@ class MusicnnFrontend(keras.layers.Layer):
 
     def call(self, inputs, training=None):
         add_channel = keras.backend.expand_dims(inputs)
-        normalized_input = self.normalized_input(add_channel, training)
+        normalized_input = self.normalized_input(add_channel, training=training)
         input_pad_7 =  self.timbral_padding(normalized_input)
-        f74 = self.f74(input_pad_7, training)
-        f77 = self.f77(input_pad_7, training)
-        s1 = self.s1(normalized_input, training)
-        s2 = self.s2(normalized_input, training)
-        s3 = self.s3(normalized_input, training)
-        return [f74, f77, s1, s2, s3]
+        f74 = self.f74(input_pad_7, training=training)
+        f77 = self.f77(input_pad_7, training=training)
+        s1 = self.s1(normalized_input, training=training)
+        s2 = self.s2(normalized_input, training=training)
+        s3 = self.s3(normalized_input, training=training)
+        return f74, f77, s1, s2, s3
 
     def get_config(self):
         config = super().get_config()
@@ -156,7 +159,7 @@ class MusicnnFrontendBlock(keras.layers.Layer):
 
     def call(self, inputs, training=None):
         conv = self.conv(inputs)
-        bn_conv = self.bn_conv(conv, training)
+        bn_conv = self.bn_conv(conv, training=training)
         maxpool = self.maxpool(bn_conv)
         squeeze = keras.backend.squeeze(maxpool, -2)
         return squeeze
@@ -195,16 +198,16 @@ class MusicnnMidend(keras.layers.Layer):
     def call(self, inputs, training=None):
         # conv layer 1
         conv1 = self.conv1(inputs)
-        cnn1 = self.cnn1(conv1, training)
+        cnn1 = self.cnn1(conv1, training=training)
 
         # conv layer 2 - residual connection
         conv2 = self.conv2(cnn1)
-        bn_conv2 = self.bn_conv2(conv2, training)
+        bn_conv2 = self.bn_conv2(conv2, training=training)
         cnn2 = self.cnn2([cnn1, bn_conv2])
 
         # conv layer 3 - residual connection
         conv3 = self.conv3(cnn2)
-        bn_conv3 = self.bn_conv3(conv3, training)
+        bn_conv3 = self.bn_conv3(conv3, training=training)
         cnn3 = self.cnn3([cnn2, bn_conv3])
 
         return inputs, cnn1, cnn2, cnn3
@@ -217,18 +220,21 @@ class MusicnnMidend(keras.layers.Layer):
 
 
 class MusicnnBackend(keras.layers.Layer):
-    def __init__(self, num_classes, output_units, **kwargs):
+    def __init__(self, num_classes, output_units, dropout=0.5, **kwargs):
         super().__init__(**kwargs)
+        if not isinstance(output_units, Iterable):
+            output_units = (output_units,)
 
-        # penultimate dense layer
-        self.bn_flat_pool = keras.layers.BatchNormalization(name='batch_norm_pool')
-        self.flat_pool_dropout = keras.layers.Dropout(rate=0.5)
-        self.penultimate = keras.layers.Dense(units=output_units, activation=keras.activations.relu, name='penultimate')
-        self.bn_penultimate = keras.layers.BatchNormalization(name='batch_norm_penultimate')
-        self.penultimate_dropout = keras.layers.Dropout(rate=0.5)
-
+        self.classifier = keras.Sequential([
+            keras.layers.BatchNormalization(name='batch_norm_pool'),
+            keras.layers.Dropout(rate=dropout, name='dropout_pool'),
+        ])
+        for idx, feature_dim in enumerate(output_units):
+            self.classifier.add(keras.layers.Dense(units=feature_dim, activation=keras.activations.relu, name=f'dense{idx+1}'))
+            self.classifier.add(keras.layers.BatchNormalization(name=f'batch_norm_dense{idx+1}'))
+            self.classifier.add(keras.layers.Dropout(rate=dropout, name=f'dropout_dense{idx+1}'))
         # output dense layer
-        self.logits = keras.layers.Dense(units=num_classes, activation=None, name='logits')
+        self.classifier.add(keras.layers.Dense(units=num_classes, activation=None, name='logits'))
 
 
     def build(self, input_shape):
@@ -255,25 +261,16 @@ class MusicnnBackend(keras.layers.Layer):
         max_pool = self.max_pool(channel_last)
         mean_pool = self.mean_pool(channel_last)
         all_pool = self.all_pool([max_pool, mean_pool])
-
-        # penultimate dense layer
         flat_pool = self.flat_pool(all_pool)
-        bn_flat_pool = self.bn_flat_pool(flat_pool, training)
-        flat_pool_dropout = self.flat_pool_dropout(bn_flat_pool, training)
-        penultimate = self.penultimate(flat_pool_dropout)
-        bn_penultimate = self.bn_penultimate(penultimate, training)
-        penultimate_dropout = self.penultimate_dropout(bn_penultimate, training)
-
-        # output dense layer
-        logits = self.logits(penultimate_dropout)
-
+        # classifier
+        logits = self.classifier(flat_pool, training=training)
         return logits
 
 
     def get_config(self):
         config = super().get_config()
-        config.update({'num_classes': self.logits.units})
-        config.update({'output_units': self.penultimate.units})
+        config.update({'num_classes': self.classifier.get_layer('logits').units})
+        config.update({'output_units': [self.classifier.get_layer(index=i).units for i in range(2, len(self.classifier.layers)-1, 3)]})
         return config
 
 
@@ -289,9 +286,9 @@ class VggBlock(keras.layers.Layer):
 
     def call(self, inputs, training=None):
         conv = self.conv(inputs)
-        bn_conv = self.bn_conv(conv, training)
+        bn_conv = self.bn_conv(conv, training=training)
         pool = self.pool(bn_conv)
-        do_pool = self.do_pool(pool, training)
+        do_pool = self.do_pool(pool, training=training)
         return pool, do_pool
 
 
@@ -323,13 +320,13 @@ class Vgg(keras.Model):
 
 
     def call(self, inputs, training=None):
-        bn_input = self.bn_input(inputs, training)
+        bn_input = self.bn_input(inputs, training=training)
 
-        vgg1, do_vgg1 = self.vgg1(bn_input, training)
-        vgg2, do_vgg2 = self.vgg2(do_vgg1, training)
-        vgg3, do_vgg3 = self.vgg3(do_vgg2, training)
-        vgg4, do_vgg4 = self.vgg4(do_vgg3, training)
-        vgg5, do_vgg5 = self.vgg5(do_vgg4, training)
+        vgg1, do_vgg1 = self.vgg1(bn_input, training=training)
+        vgg2, do_vgg2 = self.vgg2(do_vgg1, training=training)
+        vgg3, do_vgg3 = self.vgg3(do_vgg2, training=training)
+        vgg4, do_vgg4 = self.vgg4(do_vgg3, training=training)
+        vgg5, do_vgg5 = self.vgg5(do_vgg4, training=training)
 
         flat_vgg5 = self.flat_vgg5(do_vgg5)
         output = self.output(flat_vgg5)
