@@ -1,3 +1,4 @@
+from .transformers import TransformerEncoderBlock
 from tensorflow import keras
 from os.path import join, dirname
 from collections.abc import Iterable 
@@ -56,6 +57,60 @@ def build_musicnn(
     taggram = keras.layers.Activation(keras.activations.sigmoid, name='taggram')(logits)
 
     model = keras.Model(inputs=inputs, outputs=taggram, name='musicnn', **kwargs)
+    load_weights(model, weights)
+    return model
+
+
+def build_musicnn_transformer_classifier(
+    inputs,
+    num_classes=2,
+    final_activation='sigmoid',
+    num_filt_frontend=1.6,
+    num_filt_midend=64,
+    transformer_blocks=1,
+    transformer_head_size=753,
+    transformer_num_heads=1,
+    num_units_transformer=200,
+    transformer_dropout=0.1,
+    num_units_backend=(200, 100),
+    backend_dropout=0.5,
+    weights=None,
+    **kwargs
+):
+    musicnn = build_musicnn_transformer(inputs, num_classes, num_filt_frontend, num_filt_midend, transformer_blocks, transformer_head_size, transformer_num_heads, num_units_transformer, transformer_dropout, num_units_backend, backend_dropout, weights, **kwargs)
+    musicnn.get_layer('backend').classifier.get_layer('logits').activation = keras.activations.get(final_activation)
+    model = keras.Model(inputs=musicnn.input, outputs=musicnn.get_layer('backend').output, name='musicnn_transformer_classifier', **kwargs)
+    return model
+
+
+def build_musicnn_transformer(
+    inputs,
+    num_classes=50,
+    num_filt_frontend=1.6,
+    num_filt_midend=64,
+    transformer_blocks=1,
+    transformer_head_size=753,
+    transformer_num_heads=1,
+    num_units_transformer=100,
+    transformer_dropout=0.1,
+    num_units_backend=200,
+    backend_dropout=0.5,
+    weights=None,
+    **kwargs
+):
+    frontend_features_list = MusicnnFrontend(num_filt_frontend, name='frontend')(inputs)
+    frontend_features = keras.layers.Concatenate(axis=-1, name='concat_frontend')(frontend_features_list)
+
+    midend_features_list = MusicnnMidend(num_filt_midend, name='midend')(frontend_features)
+    x = keras.layers.Concatenate(axis=-1, name='concat_midend')(midend_features_list)
+
+    for idx in range(transformer_blocks):
+        x = TransformerEncoderBlock(transformer_head_size, transformer_num_heads, num_units_transformer, transformer_dropout, name=f'transformer{idx+1}')(x)
+
+    logits = MusicnnBackend(num_classes, num_units_backend, backend_dropout, name='backend')(x)
+    taggram = keras.layers.Activation(keras.activations.sigmoid, name='taggram')(logits)
+
+    model = keras.Model(inputs=inputs, outputs=taggram, name='musicnn_transformer', **kwargs)
     load_weights(model, weights)
     return model
 
